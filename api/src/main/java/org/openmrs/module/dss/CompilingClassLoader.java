@@ -9,31 +9,34 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Map;
 import javax.tools.JavaCompiler;
 import javax.tools.JavaFileObject;
 import javax.tools.StandardJavaFileManager;
 import javax.tools.ToolProvider;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.openmrs.util.OpenmrsClassLoader;
 import org.openmrs.api.AdministrationService;
 import org.openmrs.api.context.Context;
+import org.openmrs.arden.MlmRule;
 import org.openmrs.module.ModuleClassLoader;
 import org.openmrs.module.ModuleFactory;
 import org.openmrs.module.dss.service.DssService;
 import org.openmrs.module.dss.util.IOUtil;
 import org.openmrs.module.dss.util.Util;
+import org.openmrs.util.OpenmrsClassLoader;
 
 /**
- * A CompilingClassLoader compiles your Java source on-the-fly. It checks for
- * nonexistent .class files, or .class files that are older than their
- * corresponding source code.
+ * A CompilingClassLoader compiles your Java source on-the-fly. It checks for nonexistent .class files, or .class files
+ * that are older than their corresponding source code.
  *
  * @Author - Vibha Anand - Adapted from ibm.com/developerWorks
  */
-public class CompilingClassLoader extends ClassLoader {
+public class CompilingClassLoader extends OpenmrsClassLoader {
 
     private Log log = LogFactory.getLog(this.getClass());
     private String rulePackagePrefix = null;
@@ -44,8 +47,40 @@ public class CompilingClassLoader extends ClassLoader {
     private String mlmRuleDirectory = null;
     private boolean clearMLMFiles = false;
     private boolean clearJavaFiles = false;
+    private Map<String, Class<?>> classMap = Collections.synchronizedMap(new HashMap<String, Class<?>>());
 
-    public CompilingClassLoader() {
+    /**
+     * Private class to hold the one classloader used throughout openmrs. This is an alternative to storing the instance
+     * object on {@link CompilingClassLoader} itself so that garbage collection can happen correctly.
+     */
+    private static class CompilingClassLoaderHolder {
+
+        private static CompilingClassLoader INSTANCE = null;
+    }
+
+    /**
+     * Get the static/singular instance of the module class loader
+     *
+     * @return CompilingClassLoader
+     */
+    public static CompilingClassLoader getInstance() {
+        if (CompilingClassLoaderHolder.INSTANCE == null) {
+            CompilingClassLoaderHolder.INSTANCE = new CompilingClassLoader();
+        }
+
+        return CompilingClassLoaderHolder.INSTANCE;
+    }
+
+    private CompilingClassLoader(ClassLoader parent) {
+        super(parent);
+        setupClassLoader();
+    }
+
+    private CompilingClassLoader() {
+        this(CompilingClassLoader.class.getClassLoader());
+    }
+
+    private void setupClassLoader() {
         AdministrationService adminService = Context.getAdministrationService();
 
         String property = adminService
@@ -101,27 +136,47 @@ public class CompilingClassLoader extends ClassLoader {
 
         String classpath = getClasspath();
 
+        log.debug("CLASSPATH is " + classpath);
+
         try {
             if (this.classRulesDirectory == null) {
+                log.error("Global property dss.classRuleDirectory must be set.");
                 throw new Exception("Global property dss.classRuleDirectory must be set.");
             }
             String[] options = new String[]{"-classpath", classpath, "-d", this.classRulesDirectory};
+            log.debug("Options are {" + options[0] + "," + options[1] + "," + options[2] + "," + options[3] + "}");
 
+            log.debug("Going to load file: " + javaFile);
             File file = new File(javaFile);
 
+            if (file == null) {
+                log.error("File is NULL!");
+            } else {
+                log.info("File loaded.");
+            }
+
+            log.debug("Going to get the SystemJavaCompiler...");
             JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+
+            log.debug("Going to get the StandardFileManager...");
             StandardJavaFileManager fileManager = compiler
                     .getStandardFileManager(null, null, null);
 
+            log.debug("Going to get the JavaFileObjects...");
             Iterable<? extends JavaFileObject> fileObjects = fileManager
                     .getJavaFileObjects(file);
             StringWriter writer = new StringWriter();
-            boolean success = compiler.getTask(writer, fileManager, null,
-                    Arrays.asList(options), null, fileObjects).call();
 
-            if (!success) {
-                this.log.error(writer.toString());
+            log.info("Going to compile...");
+            boolean success = compiler.getTask(writer, fileManager, null, Arrays.asList(options), null, fileObjects).call();
+
+            if (success) {
+                log.info("Success!");
+            } else {
+                log.info("Error :(");
+                log.error(writer.toString());
             }
+
             fileManager.close();
             return success;
         } catch (Exception e) {
@@ -138,56 +193,56 @@ public class CompilingClassLoader extends ClassLoader {
      * @return String classpath
      */
     public String getClasspath() {
-        String classpath = "";
+        log.debug("Going to build CLASSPATH...");
         HashSet<String> classpathFiles = new HashSet<String>();
 
         Collection<ModuleClassLoader> moduleClassLoaders =
                 ModuleFactory.getModuleClassLoaders();
 
-        //check module dependencies
-        for (ModuleClassLoader currClassLoader : moduleClassLoaders) {
-            URL[] urls = currClassLoader.getURLs();
+        // check module dependencies
+        for (ModuleClassLoader classLoader : moduleClassLoaders) {
+            URL[] urls = classLoader.getURLs();
             for (URL url : urls) {
-                classpathFiles.add(url.getPath().substring(1));
+                classpathFiles.add(url.getPath());
             }
         }
 
         // check current class loader and all its parents
-        ClassLoader currClassLoader = Thread.currentThread()
-                .getContextClassLoader();
-
+        ClassLoader currClassLoader = Thread.currentThread().getContextClassLoader();
         while (currClassLoader != null) {
             if (currClassLoader instanceof URLClassLoader) {
                 URL[] urls = ((URLClassLoader) currClassLoader).getURLs();
 
                 for (URL url : urls) {
-                    classpathFiles.add(url.getPath().substring(1));
+                    classpathFiles.add(url.getPath());
                 }
             }
             currClassLoader = currClassLoader.getParent();
         }
 
+        // build CLASSPATH
         Iterator<String> classpathEntries = classpathFiles.iterator();
-
+        StringBuilder classpathBuilder = new StringBuilder();
         while (classpathEntries.hasNext()) {
-            if (classpath.length() > 0) {
-                classpath += ";";
+            if (classpathBuilder.length() > 0) {
+                classpathBuilder.append(java.io.File.pathSeparator);
             }
-            classpath += classpathEntries.next();
+            classpathBuilder.append(classpathEntries.next());
         }
 
-        classpath = classpath.replaceAll("%20", " ");
+        String classpath = classpathBuilder.toString().replaceAll("%20", " ");
+        log.debug("CLASSPATH is " + classpath);
 
+        // return CLASSPATH
         return classpath;
     }
 
     /**
-     * Parse the mlm file to java source code file specified in the 'mlmFile'
-     * parameter. Return a true if the parsing worked, false otherwise.
+     * Parse the mlm file to java source code file specified in the 'mlmFile' parameter. Return a true if the parsing
+     * worked, false otherwise.
      *
      * @param mlmFile path to mlm file to convert to java file
-     * @return boolean true if the mlm file was successfully converted to a java
-     * file
+     * @return boolean true if the mlm file was successfully converted to a java file
      */
     public boolean parse(String mlmFile) {
         // Let the user know what's going on
@@ -210,27 +265,89 @@ public class CompilingClassLoader extends ClassLoader {
 
         return errorCode == 0;
     }
-    
+
+    /**
+     * @see org.openmrs.util.OpenmrsClassLoader#loadClass(java.lang.String, boolean)
+     */
+    @Override
+    public Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+
+        Class<?> clas = loadClass(name);
+        if (resolve) {
+            resolveClass(clas);
+        }
+        return clas;
+    }
+
+    /**
+     * @see java.lang.ClassLoader#loadClass(java.lang.String)
+     */
+    @Override
+    public Class<?> loadClass(String name) throws ClassNotFoundException {
+        log.info("Trying to load class " + name + "...");
+        Class classObject;
+        try {
+            classObject = getParent().loadClass(name);
+            if (classObject instanceof Class) {
+                log.info("Class found!");
+            }
+            return classObject;
+        } catch (Exception e) {
+            log.info("Class not found: " + e.getMessage());
+        }
+
+        Collection<ModuleClassLoader> classLoaders = ModuleFactory.getModuleClassLoaders();
+
+        for (ModuleClassLoader classLoader : classLoaders) {
+            try {
+                classObject = classLoader.loadClass(name);
+                if (classObject instanceof Class) {
+                    log.info("Class found!");
+                }
+                return classObject;
+            } catch (Exception e) {
+                log.info("Class not found: " + e.getMessage());
+            }
+        }
+        classObject = findClass(name);
+        if (classObject instanceof Class) {
+            log.info("Class found!");
+        } else {
+            log.info("Class not found.");
+        }
+        return classObject;
+    }
+
+    private Class defineDynamicClass(String name, byte raw[]) {
+        try {
+            return defineClass(name, raw, 0, raw.length);
+        } catch (Exception e) {
+        }
+        return null;
+    }
+
     // The heart of the ClassLoader -- automatically compile
     // source as necessary when looking for class files
     @Override
-    public Class<?> findClass(String name)
-            throws ClassNotFoundException {
-        boolean updateRuleTable = false;
-        Class clas = null;
-        // Our goal is to get a Class object
-        //only check super classloader for non-dynamic rules
-        if (this.rulePackagePrefix != null
-                && !name.startsWith(this.rulePackagePrefix)) {
-            clas = super.findClass(name);
-        }
-        //if the class is not found, look in rule directory
-        if (clas == null) {
-            //security check to protect system classes 
-            if (name.startsWith("java.")) {
-                throw new ClassNotFoundException();
-            }
+    public Class findClass(String name) throws ClassNotFoundException {
 
+        boolean compiledNewClassfile = false;
+        boolean updateRuleTable = false;
+        Class classObject = null;
+
+        // Our goal is to get a Class object
+        // only check super classloader for non-dynamic rules
+        if (this.rulePackagePrefix == null
+                || (this.rulePackagePrefix != null && !name.startsWith(this.rulePackagePrefix))) {
+            try {
+                log.info("Trying with URLClassLoader...");
+                return super.findClass(name);
+            } catch (Exception e) {
+                log.info("Class not found: " + e.getMessage());
+            }
+        }
+        // if the class is not found, look in rule directory
+        if (classObject == null) {
             // Create a pathname from the class name
             // E.g. java.lang.Object => java/lang/Object
             String fileStub = name;
@@ -250,6 +367,7 @@ public class CompilingClassLoader extends ClassLoader {
             if (this.javaRuleDirectory != null) {
                 javaFilename = this.javaRuleDirectory;
             }
+            javaFilename += this.rulePackagePrefix.replace('.', '/');
             javaFilename += fileStub + ".java";
             String classFilename = "";
             if (this.classRulesDirectory != null) {
@@ -309,6 +427,8 @@ public class CompilingClassLoader extends ClassLoader {
                             + javaFilename);
                 }
 
+                compiledNewClassfile = true;
+
                 updateRuleTable = true;
 
                 if (this.archivedJavaRuleDirectory != null) {
@@ -337,19 +457,34 @@ public class CompilingClassLoader extends ClassLoader {
             // Let's try to load up the raw bytes, assuming they were
             // properly compiled, or didn't need to be compiled
             try {
-                // read the bytes
-                byte raw[] = getBytes(classFilename);
-                // try to turn them into a class
-                clas = defineClass(name, raw, 0, raw.length);
+                //if a new class file was created, re-define the class in the classloader
+                //otherwise find the loaded class
+                if (!compiledNewClassfile) {
+                    try {
+                        classObject = findLoadedClass(name);
+                        if (classObject == null) {
+                            classObject = getInstance().classMap.get(name);
+                        }
+                    } catch (Exception e) {
+                    }
+                }
+                if (compiledNewClassfile || classObject == null) {
+                    // read the bytes
+                    byte raw[] = getBytes(classFilename);
+                    // try to turn them into a class
+                    CompilingClassLoader compilingClassLoader = new CompilingClassLoader(this);
+                    classObject = compilingClassLoader.defineDynamicClass(name, raw);
+                    getInstance().classMap.put(name, classObject);
+                }
 
                 if (updateRuleTable) {
                     // load class filename into rule table
                     try {
-                        Object obj = clas.newInstance();
-                        if (obj instanceof DssRule) {
+                        Object obj = classObject.newInstance();
+                        if (obj instanceof MlmRule) {
                             DssService dssService = Context
                                     .getService(DssService.class);
-                            dssService.addRule(classFilename, (DssRule) obj);
+                            dssService.addRule(classFilename, (MlmRule) obj);
                         }
                     } catch (Exception e) {
                         log.error("Error saving rule class file: "
@@ -365,6 +500,6 @@ public class CompilingClassLoader extends ClassLoader {
                 //load precompiled rules from the dynamic directory
             }
         }
-        return clas;
+        return classObject;
     }
 }

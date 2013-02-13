@@ -6,33 +6,31 @@ import org.apache.commons.logging.LogFactory;
 import org.openmrs.GlobalProperty;
 import org.openmrs.api.AdministrationService;
 import org.openmrs.api.context.Context;
-import org.openmrs.api.context.ContextAuthenticationException;
-import org.openmrs.module.Activator;
+import org.openmrs.module.BaseModuleActivator;
 import org.openmrs.module.dss.util.Util;
 
 /**
  * Purpose: Checks that module specific global properties have been set
  *
  * @author Tammy Dugan
- *
  */
-public class DssActivator implements Activator {
+public class DssActivator extends BaseModuleActivator {
 
     private Log log = LogFactory.getLog(this.getClass());
 
     /**
-     * @see org.openmrs.module.Activator#startup()
+     * @see org.openmrs.module.BaseModuleActivator#started()
      */
     @Override
-    public void startup() {
-        this.log.info("Starting Dss Module");
-
-        //check that all the required global properties are set
+    public void started() {
+        log.info("Starting Dss Module");
+        // check that all the required global properties are set
         checkGlobalProperties();
     }
 
     private void checkGlobalProperties() {
         try {
+            log.info("Checking if records in global_property are set up correctly...");
             AdministrationService adminService = Context.getAdministrationService();
             Context.authenticate(adminService
                     .getGlobalProperty("scheduler.username"), adminService
@@ -42,31 +40,28 @@ public class DssActivator implements Activator {
             GlobalProperty currProperty;
             String currValue;
             String currName;
-
             while (properties.hasNext()) {
                 currProperty = properties.next();
                 currName = currProperty.getProperty();
                 if (currName.startsWith("dss")) {
                     currValue = currProperty.getPropertyValue();
                     if (currValue == null || currValue.length() == 0) {
-                        this.log.error("You must set a value for global property: "
-                                + currName);
+                        this.log.error("You must set a value for global property: " + currName);
                     }
                 }
             }
-        } catch (ContextAuthenticationException e) {
+        } catch (Exception e) {
             this.log.error("Error checking global properties for dss module");
             this.log.error(e.getMessage());
             this.log.error(Util.getStackTrace(e));
-
         }
     }
 
     /**
-     * @see org.openmrs.module.Activator#shutdown()
+     * @see org.openmrs.module.BaseModuleActivator#stopped()
      */
     @Override
-    public void shutdown() {
+    public void stopped() {
         this.log.info("Shutting down Dss Module");
     }
 }

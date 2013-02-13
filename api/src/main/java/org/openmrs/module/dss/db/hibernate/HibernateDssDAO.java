@@ -43,6 +43,7 @@ public class HibernateDssDAO implements DssDAO {
         this.sessionFactory = sessionFactory;
     }
 
+    @Override
     public Rule getRule(int ruleId) {
         try {
             String sql = "select * from dss_rule where rule_id=?";
@@ -100,6 +101,32 @@ public class HibernateDssDAO implements DssDAO {
     }
 
     @Override
+    public List<Rule> getPrioritizedRules() throws DAOException {
+        try {
+            AdministrationService adminService = Context.getAdministrationService();
+            String sortOrder = adminService.getGlobalProperty("dss.ruleSortOrder");
+
+            if (sortOrder == null) {
+                sortOrder = "DESC";
+            }
+
+            String sql = "SELECT *"
+                    + " FROM dss_rule"
+                    + " WHERE priority>=0 AND priority<1000"
+                    + " AND version='1.0'"
+                    + " ORDER BY priority " + sortOrder;
+
+            SQLQuery query = this.sessionFactory.getCurrentSession().createSQLQuery(sql);
+            query.addEntity(Rule.class);
+            return query.list();
+
+        } catch (Exception e) {
+            this.log.error(Util.getStackTrace(e));
+        }
+        return null;
+    }
+
+    @Override
     public List<Rule> getPrioritizedRules(String type) throws DAOException {
         try {
             AdministrationService adminService = Context
@@ -124,6 +151,7 @@ public class HibernateDssDAO implements DssDAO {
         return null;
     }
 
+    @Override
     public List<Rule> getNonPrioritizedRules(String type) throws DAOException {
         try {
             AdministrationService adminService = Context
@@ -149,6 +177,7 @@ public class HibernateDssDAO implements DssDAO {
         return null;
     }
 
+    @Override
     public List<Rule> getRules(Rule rule, boolean ignoreCase,
             boolean enableLike, String sortColumn) throws DAOException {
         try {
@@ -161,7 +190,7 @@ public class HibernateDssDAO implements DssDAO {
             if (enableLike) {
                 example = example.enableLike(MatchMode.ANYWHERE);
             }
-            Order order = null;
+
             AdministrationService adminService = Context
                     .getAdministrationService();
             String sortOrder = adminService
@@ -171,6 +200,7 @@ public class HibernateDssDAO implements DssDAO {
                 sortColumn = "priority";
             }
 
+            Order order;
             if (sortOrder == null || sortOrder.equalsIgnoreCase("ASC")) {
                 order = Order.asc(sortColumn);
             } else {
@@ -182,9 +212,12 @@ public class HibernateDssDAO implements DssDAO {
                     .list();
 
             return results;
+
         } catch (Exception e) {
             this.log.error(Util.getStackTrace(e));
+
         }
+
         return null;
     }
 }
